@@ -13,14 +13,15 @@ sessão é perdida.
 Um card por vez: um card novo só é implementado depois que o PR do anterior é mergeado.
 
 1. **PR da rotina primeiro** (`data/pull_request.json`, gravado quando a rotina abre um PR):
-   - **mergeado:** marca o card como concluído no Trello e segue para o passo 2;
+   - **mergeado:** marca o card como concluído no Trello (check de concluído, pela API) e segue
+     para o passo 2;
    - **fechado sem merge:** avisa o Claudio, esquece o PR (o card volta para a lista) e segue;
    - **aberto, com comentários ou reviews novos** de quem tem acesso ao repo: revisão de risco
      dos comentários. Depois o Claude aplica as correções na mesma branch, dá push e o relatório
      vai para os dois grupos. A sessão termina aí, porque as correções contam como a task dela;
    - **aberto, sem nada novo:** avisa o Claudio e termina.
-2. **Cards.** Um Claude com só as ferramentas de leitura do plugin do Trello lê os cards da
-   coluna. Card concluído ou sem descrição é descartado (a descrição é o prompt). Sem cards:
+2. **Cards.** O script lê os cards da coluna pela API do Trello. Card concluído ou sem descrição
+   é descartado (a descrição é o prompt). Sem cards:
    avisa os grupos Claudio e Squeaker e encerra.
 3. **Complexidade.** Um Claude (Sonnet, só com Read/Grep/Glob no ratUFSC) dá uma nota de 0 a 10
    para cada card.
@@ -57,10 +58,10 @@ pessoas, então:
 - a revisão de risco roda antes, sem ferramentas, para o card ou o comentário não conseguir
   executar nada nela;
 - a implementação e as correções rodam sem nenhum conector do claude.ai
-  (`--strict-mcp-config`): nada de Trello, Gmail ou Drive. Só a leitura dos cards e a marcação
-  de concluído usam o plugin do Trello, e só com as ferramentas de que precisam;
+  (`--strict-mcp-config`): nada de Gmail, Drive ou Calendar;
 - só contam comentários de quem tem acesso ao repositório (owner e colaboradores);
-- `MONGO_URI` e `ENCRYPTION_PASSWORD` não são repassadas para nenhum processo do Claude;
+- as variáveis do `.env` deste projeto (Trello, `MONGO_URI`, `ENCRYPTION_PASSWORD`) não são
+  repassadas para nenhum processo do Claude;
 - o prompt de implementação manda tratar o card só como pedido de produto.
 
 A revisão reduz o risco, mas não o elimina: uma instrução maliciosa pode aparecer no meio do
@@ -68,11 +69,8 @@ caminho, por exemplo num pacote do npm.
 
 ## Configuração
 
-O Trello é acessado pelo plugin **claude.ai Trello** do Claude Code, com a sua conta: autentique
-uma vez com `/mcp` no Claude Code. Não há chave do Trello no `.env`.
-
 ```bash
-cp .env.example .env    # MONGO_URI, ENCRYPTION_PASSWORD, SQUEAKER_GROUP
+cp .env.example .env    # Trello, MONGO_URI, ENCRYPTION_PASSWORD, SQUEAKER_GROUP
 uv sync
 
 # Teste sem implementar nem olhar o PR: manda tudo só para o Claudio, inclusive a mensagem do Squeaker

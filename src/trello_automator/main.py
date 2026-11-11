@@ -25,6 +25,7 @@ from trello_automator import claude, messages
 from trello_automator import pull_request as pull_requests
 from trello_automator.config import DATA_DIR, SOURCE, Settings, load_settings
 from trello_automator.pull_request import PullRequestState, TrackedPullRequest
+from trello_automator.trello import Card, TrelloClient, TrelloError
 from trello_automator.selection import (
     RatedCard,
     build_branch_slug,
@@ -77,9 +78,27 @@ class Notifier:
         return reply.text if reply is not None else None
 
 
+def read_cards(settings: Settings) -> list[Card]:
+    trello = TrelloClient(settings.trello_api_key, settings.trello_token)
+    try:
+        board_id = trello.find_board_id(settings.trello_board_name)
+        list_id = trello.find_list_id(board_id, settings.trello_list_name)
+        return trello.list_open_cards(list_id)
+    finally:
+        trello.close()
+
+
+def mark_card_complete(card: Card, settings: Settings) -> None:
+    trello = TrelloClient(settings.trello_api_key, settings.trello_token)
+    try:
+        trello.mark_complete(card.id)
+    finally:
+        trello.close()
+
+
 def rate_cards(settings: Settings) -> list[RatedCard]:
     # Cards without description have no task to implement
-    cards = [card for card in claude.read_cards(settings) if card.description]
+    cards = [card for card in read_cards(settings) if card.description]
     log.info(f"{len(cards)} cards with description to rate")
     if not cards:
         return []
@@ -245,7 +264,7 @@ def handle_tracked_pull_request(
     log.info(f"Tracked PR {tracked.url} is {state.value}")
 
     if state == PullRequestState.MERGED:
-        claude.mark_card_complete(tracked.card, settings)
+        mark_card_complete(tracked.card, settings)
         PULL_REQUEST_PATH.unlink()
         notifier.to_both(messages.build_merged(tracked.card.name, tracked.url))
         return False

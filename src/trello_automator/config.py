@@ -10,11 +10,13 @@ DATA_DIR = PROJECT_ROOT / "data"
 SOURCE = "trello_automator"
 
 # Never passed to the Claude processes: they read card descriptions written by other people
-SECRET_VARIABLES = ("MONGO_URI", "ENCRYPTION_PASSWORD")
+SECRET_VARIABLES = ("TRELLO_API_KEY", "TRELLO_TOKEN", "MONGO_URI", "ENCRYPTION_PASSWORD")
 
 
 @dataclass(frozen=True)
 class Settings:
+    trello_api_key: str
+    trello_token: str
     trello_board_name: str
     trello_list_name: str
     mongo_uri: str
@@ -31,6 +33,8 @@ class Settings:
 def load_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
     return Settings(
+        trello_api_key=os.environ["TRELLO_API_KEY"],
+        trello_token=os.environ["TRELLO_TOKEN"],
         trello_board_name=os.environ.get("TRELLO_BOARD_NAME", "Squeaker"),
         trello_list_name=os.environ.get("TRELLO_LIST_NAME", "GUSTAVO"),
         mongo_uri=os.environ["MONGO_URI"],

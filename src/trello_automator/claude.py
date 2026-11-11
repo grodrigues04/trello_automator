@@ -1,11 +1,10 @@
 """The Claude sessions of the routine.
 
 Each session gets only the tools it needs:
-- reading the cards and marking one as complete: only the Trello plugin tools;
 - complexity: Read/Grep/Glob in the repository;
 - risk review: no tools at all, so the content under review cannot make it run anything;
 - implementation and corrections: everything inside the repository, but no MCP connector
-  (--strict-mcp-config), so a malicious card cannot reach Trello, Gmail, Drive...
+  (--strict-mcp-config), so a malicious card cannot reach Gmail, Drive...
 """
 
 import json
@@ -17,35 +16,12 @@ from string import Template
 
 from trello_automator.config import PROMPTS_DIR, Settings, build_claude_environment
 from trello_automator.pull_request import Feedback, TrackedPullRequest
-from trello_automator.trello import TRELLO_MCP_SERVER, Card
+from trello_automator.trello import Card
 
 log = logging.getLogger(__name__)
 
 EVALUATION_TIMEOUT_SECONDS = 15 * 60
 EVALUATION_MAX_TURNS = 40
-# The Trello connector has write tools too: everything that is not reading is denied
-TRELLO_WRITE_TOOL_WORDS = ("add", "create", "update", "move", "delete", "archive", "set", "remove")
-
-CARDS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "cards": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
-                    "name": {"type": "string"},
-                    "description": {"type": "string"},
-                    "url": {"type": "string"},
-                    "complete": {"type": "boolean"},
-                },
-                "required": ["id", "name", "description", "url", "complete"],
-            },
-        }
-    },
-    "required": ["cards"],
-}
 
 COMPLEXITY_SCHEMA = {
     "type": "object",
@@ -71,13 +47,6 @@ RISK_SCHEMA = {
     "required": ["risky", "reason"],
 }
 
-COMPLETE_SCHEMA = {
-    "type": "object",
-    "properties": {"complete": {"type": "boolean"}, "error": {"type": "string"}},
-    "required": ["complete"],
-}
-
-
 class ClaudeError(Exception):
     pass
 
@@ -99,40 +68,6 @@ def serialize_cards(cards: list[Card]) -> str:
         ensure_ascii=False,
         indent=2,
     )
-
-
-def list_trello_tools() -> list[str]:
-    """Names of the Trello plugin tools, read from a session that only lists them."""
-    output = run_structured(
-        prompt=(
-            f"List the exact names of every tool you have that starts with {TRELLO_MCP_SERVER}__. "
-            "Do not call any tool."
-        ),
-        schema={
-            "type": "object",
-            "properties": {"tools": {"type": "array", "items": {"type": "string"}}},
-            "required": ["tools"],
-        },
-        model="claude-haiku-5-5",
-        cwd=PROMPTS_DIR,
-        # Nothing is allowed, so a tool call would be denied: the tools are only listed
-        arguments=["--tools", ""],
-        max_turns=2,
-    )
-    tools = [tool for tool in output["tools"] if tool.startswith(f"{TRELLO_MCP_SERVER}__")]
-    if not tools:
-        raise ClaudeError('o plugin "claude.ai Trello" não está autenticado: rode /mcp no Claude Code')
-    return tools
-
-
-def split_trello_tools() -> tuple[list[str], list[str]]:
-    """(reading tools, writing tools) of the Trello plugin."""
-    read_tools, write_tools = [], []
-    for tool in list_trello_tools():
-        action = tool.removeprefix(f"{TRELLO_MCP_SERVER}__").lower()
-        is_write = any(word in action for word in TRELLO_WRITE_TOOL_WORDS)
-        (write_tools if is_write else read_tools).append(tool)
-    return read_tools, write_tools
 
 
 def run_structured(
@@ -173,43 +108,6 @@ def run_structured(
     if result.get("is_error") or not isinstance(result.get("structured_output"), dict):
         raise ClaudeError(f"o Claude não devolveu o JSON esperado: {str(result)[-500:]}")
     return result["structured_output"]
-
-
-def read_cards(settings: Settings) -> list[Card]:
-    """Open cards of the list that are not marked as complete, in board order."""
-    read_tools, write_tools = split_trello_tools()
-    output = run_structured(
-        prompt=read_prompt(
-            "read_cards.md",
-            board_name=settings.trello_board_name,
-            list_name=settings.trello_list_name,
-        ),
-        schema=CARDS_SCHEMA,
-        model=settings.evaluation_model,
-        cwd=PROMPTS_DIR,
-        arguments=[
-            "--tools", "",
-            "--allowedTools", *read_tools,
-            "--disallowedTools", *write_tools,
-        ],
-        max_turns=EVALUATION_MAX_TURNS,
-    )
-    return [Card.from_dict(card) for card in output["cards"] if not card["complete"]]
-
-
-def mark_card_complete(card: Card, settings: Settings) -> None:
-    _, write_tools = split_trello_tools()
-    output = run_structured(
-        prompt=read_prompt("mark_complete.md", card_id=card.id, card_name=card.name),
-        schema=COMPLETE_SCHEMA,
-        model=settings.evaluation_model,
-        cwd=PROMPTS_DIR,
-        arguments=["--tools", "", "--allowedTools", TRELLO_MCP_SERVER],
-        max_turns=EVALUATION_MAX_TURNS,
-    )
-    if not output["complete"]:
-        raise ClaudeError(f"não foi possível marcar o card como concluído: {output.get('error')}")
-    log.info(f"Card {card.id} marked as complete (write tools available: {write_tools})")
 
 
 def evaluate_complexity(cards: list[Card], settings: Settings) -> dict[str, int]:

@@ -124,7 +124,7 @@ def test_without_tracked_pull_request_the_session_goes_on(notifier, tmp_path, mo
 
 def test_merged_pull_request_completes_the_card_and_goes_on(notifier, tracked, mocker):
     mock_pull_request_state(mocker, "MERGED")
-    mark_card_complete = mocker.patch.object(main.claude, "mark_card_complete")
+    mark_card_complete = mocker.patch.object(main, "mark_card_complete")
     assert main.handle_tracked_pull_request(notifier, MagicMock(), "session") is False
     mark_card_complete.assert_called_once()
     assert mark_card_complete.call_args.args[0] == SIMPLE.card
@@ -133,8 +133,8 @@ def test_merged_pull_request_completes_the_card_and_goes_on(notifier, tracked, m
 
 def test_failure_to_complete_the_card_keeps_the_pull_request(notifier, tracked, mocker):
     mock_pull_request_state(mocker, "MERGED")
-    mocker.patch.object(main.claude, "mark_card_complete", side_effect=main.claude.ClaudeError)
-    with pytest.raises(main.claude.ClaudeError):
+    mocker.patch.object(main, "mark_card_complete", side_effect=main.TrelloError)
+    with pytest.raises(main.TrelloError):
         main.handle_tracked_pull_request(notifier, MagicMock(), "session")
     assert main.PULL_REQUEST_PATH.exists()
 
