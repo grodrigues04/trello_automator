@@ -63,11 +63,10 @@ def build_chosen(rated_card: RatedCard) -> str:
     )
 
 
-def build_risk_question(rated_card: RatedCard, reason: str) -> str:
+def build_risk_question(subject: str, url: str, reason: str) -> str:
     return (
-        f'{TAG} A revisão de segurança achou risco no card "{rated_card.card.name}":\n'
-        f"{reason}\n\n{rated_card.card.url}\n\n"
-        "Implementar mesmo assim? Responda *sim* para implementar. "
+        f"{TAG} A revisão de segurança achou risco {subject}:\n{reason}\n\n{url}\n\n"
+        "Seguir mesmo assim? Responda *sim* para seguir. "
         "Qualquer outra resposta, ou nenhuma em 10 minutos, cancela."
     )
 
@@ -76,16 +75,56 @@ def build_risk_cancelled(rated_card: RatedCard) -> str:
     return f'{TAG} O card "{rated_card.card.name}" não será implementado nesta sessão.'
 
 
+def build_corrections_cancelled(card_name: str) -> str:
+    return f'{TAG} As correções do PR do card "{card_name}" não serão aplicadas nesta sessão.'
+
+
+def build_merged(card_name: str, pr_url: str) -> str:
+    return (
+        f'{TAG} O PR do card "{card_name}" foi mergeado e o card foi marcado como concluído no '
+        f"Trello.\n{pr_url}"
+    )
+
+
+def build_closed_without_merge(card_name: str, pr_url: str) -> str:
+    return (
+        f'{TAG} O PR do card "{card_name}" foi fechado sem merge. O card volta para a lista das '
+        f"próximas sessões.\n{pr_url}"
+    )
+
+
+def build_waiting_merge(card_name: str, pr_url: str) -> str:
+    return (
+        f'{TAG} O PR do card "{card_name}" ainda não foi mergeado e não tem comentários novos. '
+        f"Um card novo só é implementado depois do merge.\n{pr_url}"
+    )
+
+
+def build_corrections_report(card_name: str, pr_url: str, summary: str) -> str:
+    return (
+        f'{TAG} Correções aplicadas no PR do card "{card_name}".\n\n*PR:* {pr_url}\n\n'
+        f"*Relatório:*\n{truncate(summary)}"
+    )
+
+
+def build_corrections_failed(card_name: str, reason: str) -> str:
+    return f'{TAG} As correções do PR do card "{card_name}" falharam: {reason}'
+
+
+def truncate(summary: str) -> str:
+    if len(summary) > MAX_SUMMARY_LENGTH:
+        return summary[:MAX_SUMMARY_LENGTH].rstrip() + "…"
+    return summary
+
+
 def build_report(
     rated_card: RatedCard, branch: str, branch_url: str, pr_url: Optional[str], summary: str
 ) -> str:
-    if len(summary) > MAX_SUMMARY_LENGTH:
-        summary = summary[:MAX_SUMMARY_LENGTH].rstrip() + "…"
     return (
         f'{TAG} Card "{rated_card.card.name}" implementado.\n\n'
         f"*Branch:* {branch}\n{branch_url}\n\n"
         f"*PR:* {pr_url or 'não encontrado'}\n\n"
-        f"*Relatório:*\n{summary}"
+        f"*Relatório:*\n{truncate(summary)}"
     )
 
 

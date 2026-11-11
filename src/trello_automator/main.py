@@ -1,4 +1,9 @@
-"""Session routine: rate the cards, ask which one to implement, implement it and report.
+"""Session routine.
+
+1. The PR opened by the routine comes first: merged -> card marked as complete in Trello;
+   open with new review feedback -> the session only applies the corrections; open without
+   feedback -> no new card until it is merged.
+2. Otherwise: rate the cards, ask which one to implement, implement it and report.
 
 Runs on Mondays 12:00, Thursdays 22:30 and Fridays 22:00 (systemd timer). Only one session runs
 at a time (lock in data/).
@@ -10,14 +15,16 @@ import json
 import logging
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from interface_personal_whats import InterfacePersonalWhats, MessageNotSentError
 
 from trello_automator import claude, messages
+from trello_automator import pull_request as pull_requests
 from trello_automator.config import DATA_DIR, SOURCE, Settings, load_settings
+from trello_automator.pull_request import PullRequestState, TrackedPullRequest
 from trello_automator.selection import (
     RatedCard,
     build_branch_slug,
@@ -27,12 +34,11 @@ from trello_automator.selection import (
     is_confirmation,
     parse_card_number,
 )
-from trello_automator.trello import TrelloClient
 
 log = logging.getLogger("trello_automator")
 
 LOCK_PATH = DATA_DIR / "session.lock"
-IMPLEMENTED_PATH = DATA_DIR / "implemented.json"
+PULL_REQUEST_PATH = DATA_DIR / "pull_request.json"
 LOGS_DIR = DATA_DIR / "logs"
 
 
@@ -71,31 +77,9 @@ class Notifier:
         return reply.text if reply is not None else None
 
 
-def load_implemented_card_ids() -> set[str]:
-    if not IMPLEMENTED_PATH.exists():
-        return set()
-    return set(json.loads(IMPLEMENTED_PATH.read_text(encoding="utf-8")))
-
-
-def save_implemented_card_id(card_id: str) -> None:
-    card_ids = load_implemented_card_ids() | {card_id}
-    IMPLEMENTED_PATH.write_text(json.dumps(sorted(card_ids), indent=2), encoding="utf-8")
-
-
 def rate_cards(settings: Settings) -> list[RatedCard]:
-    trello = TrelloClient(settings.trello_api_key, settings.trello_token)
-    try:
-        board_id = trello.find_board_id(settings.trello_board_name)
-        list_id = trello.find_list_id(board_id, settings.trello_list_name)
-        cards = trello.list_cards(list_id)
-    finally:
-        trello.close()
-
-    implemented_card_ids = load_implemented_card_ids()
     # Cards without description have no task to implement
-    cards = [
-        card for card in cards if card.description and card.id not in implemented_card_ids
-    ]
+    cards = [card for card in claude.read_cards(settings) if card.description]
     log.info(f"{len(cards)} cards with description to rate")
     if not cards:
         return []
@@ -160,21 +144,122 @@ def choose_card(
 
 
 def is_approved_by_risk_review(
-    notifier: Notifier, rated_card: RatedCard, settings: Settings
-) -> bool:
-    review = claude.review_risk(rated_card.card, settings)
+    notifier: Notifier, content: dict, subject: str, url: str, settings: Settings
+) -> Optional[bool]:
+    """True to go on, False when Gustavo said no, None when he did not reply."""
+    review = claude.review_risk(content, settings)
     if not review.risky:
         log.info("Risk review: no risk")
         return True
     log.warning(f"Risk review: {review.reason}")
     message_id = notifier.to_gustavo(
-        messages.build_risk_question(rated_card, review.reason), expect_unique_reply=True
+        messages.build_risk_question(subject, url, review.reason), expect_unique_reply=True
     )
-    if is_confirmation(notifier.wait_for_reply_text(message_id)):
-        log.info("Gustavo approved the risky card")
+    reply_text = notifier.wait_for_reply_text(message_id)
+    if reply_text is None:
+        return None
+    if is_confirmation(reply_text):
+        log.info("Gustavo approved the risky content")
         return True
-    notifier.to_both(messages.build_risk_cancelled(rated_card))
     return False
+
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_report(report_path: Path) -> Optional[dict]:
+    if not report_path.exists():
+        return None
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def describe_missing_report(exit_code: int, settings: Settings) -> str:
+    if exit_code == 124:
+        return f"o Claude passou de {settings.implementation_timeout_minutes} minutos"
+    return f"o Claude terminou (código {exit_code}) sem escrever o relatório"
+
+
+def apply_corrections(
+    notifier: Notifier,
+    tracked: TrackedPullRequest,
+    feedback: list[pull_requests.Feedback],
+    settings: Settings,
+    session_id: str,
+) -> None:
+    handled_until = now_utc()
+    approval = is_approved_by_risk_review(
+        notifier,
+        {"pull_request": tracked.url, "comments": [item.format() for item in feedback]},
+        f'nos comentários do PR do card "{tracked.card.name}"',
+        tracked.url,
+        settings,
+    )
+    if approval is not True:
+        notifier.to_gustavo(messages.build_corrections_cancelled(tracked.card.name))
+        if approval is False:
+            # Refused by Gustavo: these comments are never offered again
+            tracked.handled_until = handled_until
+            pull_requests.save_tracked(PULL_REQUEST_PATH, tracked)
+        return
+
+    report_path = DATA_DIR / "reports" / f"{session_id}-correcoes.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS_DIR / f"{session_id}-claude.log"
+    log.info(f"Applying {len(feedback)} review items to {tracked.url}, output in {log_path}")
+    exit_code = claude.apply_corrections(tracked, feedback, report_path, log_path, settings)
+    log.info(f"Claude finished with exit code {exit_code}")
+
+    report = read_report(report_path)
+    if report is None:
+        # Nothing handled: the same feedback is applied again in the next session
+        reason = describe_missing_report(exit_code, settings)
+        notifier.to_gustavo(
+            messages.build_corrections_failed(tracked.card.name, f"{reason}. Log: {log_path}")
+        )
+        notifier.to_squeaker(messages.build_corrections_failed(tracked.card.name, reason))
+        return
+
+    tracked.handled_until = handled_until
+    pull_requests.save_tracked(PULL_REQUEST_PATH, tracked)
+    summary = str(report.get("summary") or "").strip()
+    if report.get("pushed"):
+        notifier.to_both(messages.build_corrections_report(tracked.card.name, tracked.url, summary))
+    else:
+        notifier.to_both(
+            messages.build_corrections_failed(tracked.card.name, summary or "sem motivo")
+        )
+
+
+def handle_tracked_pull_request(
+    notifier: Notifier, settings: Settings, session_id: str
+) -> bool:
+    """Handles the routine's PR. True when the session ends here (no new card)."""
+    tracked = pull_requests.load_tracked(PULL_REQUEST_PATH)
+    if tracked is None:
+        return False
+    pull_request = pull_requests.view_pull_request(settings.github_repo, str(tracked.number))
+    if pull_request is None:
+        raise RuntimeError(f"PR {tracked.url} não encontrado no GitHub")
+    state = PullRequestState(pull_request["state"])
+    log.info(f"Tracked PR {tracked.url} is {state.value}")
+
+    if state == PullRequestState.MERGED:
+        claude.mark_card_complete(tracked.card, settings)
+        PULL_REQUEST_PATH.unlink()
+        notifier.to_both(messages.build_merged(tracked.card.name, tracked.url))
+        return False
+    if state == PullRequestState.CLOSED:
+        PULL_REQUEST_PATH.unlink()
+        notifier.to_gustavo(messages.build_closed_without_merge(tracked.card.name, tracked.url))
+        return False
+
+    feedback = pull_requests.fetch_new_feedback(settings.github_repo, tracked)
+    if not feedback:
+        notifier.to_gustavo(messages.build_waiting_merge(tracked.card.name, tracked.url))
+        return True
+    apply_corrections(notifier, tracked, feedback, settings, session_id)
+    return True
 
 
 def run_git(repo_path: Path, *arguments: str) -> subprocess.CompletedProcess:
@@ -204,18 +289,6 @@ def prepare_repository(repo_path: Path) -> str:
     return "O script já fez `git checkout main` e `git pull`: a `main` está limpa e atualizada."
 
 
-def find_pr_url(settings: Settings, branch: str) -> Optional[str]:
-    completed = subprocess.run(
-        ["gh", "pr", "view", branch, "--repo", settings.github_repo, "--json", "url", "-q", ".url"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
-
-
 def implement_card(
     notifier: Notifier, rated_card: RatedCard, settings: Settings, session_id: str
 ) -> None:
@@ -236,34 +309,50 @@ def implement_card(
     )
     log.info(f"Claude finished with exit code {exit_code}")
 
-    if not report_path.exists():
-        reason = (
-            f"o Claude passou de {settings.implementation_timeout_minutes} minutos"
-            if exit_code == 124
-            else f"o Claude terminou (código {exit_code}) sem escrever o relatório"
-        )
+    report = read_report(report_path)
+    if report is None:
+        reason = describe_missing_report(exit_code, settings)
         notifier.to_gustavo(
             messages.build_implementation_failed(rated_card, f"{reason}. Log: {log_path}")
         )
         notifier.to_squeaker(messages.build_implementation_failed(rated_card, reason))
         return
 
-    report = json.loads(report_path.read_text(encoding="utf-8"))
     branch = str(report.get("branch") or "").strip()
     summary = str(report.get("summary") or "").strip()
     if not branch:
         notifier.to_both(messages.build_implementation_failed(rated_card, summary or "sem motivo"))
         return
 
-    pr_url = find_pr_url(settings, branch) or report.get("pr_url") or None
+    pull_request = pull_requests.view_pull_request(settings.github_repo, branch)
+    pr_url = pull_request["url"] if pull_request else report.get("pr_url") or None
+    if pull_request is not None:
+        # From now on the sessions follow this PR until it is merged or closed
+        pull_requests.save_tracked(
+            PULL_REQUEST_PATH,
+            TrackedPullRequest(
+                card=rated_card.card,
+                complexity=rated_card.complexity,
+                branch=branch,
+                number=pull_request["number"],
+                url=pull_request["url"],
+                handled_until=now_utc(),
+            ),
+        )
+    else:
+        log.warning(f"No PR found for branch {branch}: the card may be offered again")
     branch_url = f"https://github.com/{settings.github_repo}/tree/{branch}"
-    save_implemented_card_id(rated_card.card.id)
     notifier.to_both(messages.build_report(rated_card, branch, branch_url, pr_url, summary))
     log.info(f"Report sent: branch {branch}, PR {pr_url}")
 
 
 def run_session(settings: Settings, notifier: Notifier, all_levels: bool, dry_run: bool) -> None:
     session_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    if dry_run:
+        log.info("Dry run: the routine's PR is not checked")
+    elif handle_tracked_pull_request(notifier, settings, session_id):
+        return
+
     rated_cards = rate_cards(settings)
     if not rated_cards:
         notifier.to_both(messages.build_no_cards())
@@ -272,7 +361,15 @@ def run_session(settings: Settings, notifier: Notifier, all_levels: bool, dry_ru
     chosen_card = choose_card(notifier, rated_cards, all_levels)
     if chosen_card is None:
         return
-    if not is_approved_by_risk_review(notifier, chosen_card, settings):
+    approval = is_approved_by_risk_review(
+        notifier,
+        {"name": chosen_card.card.name, "description": chosen_card.card.description},
+        f'no card "{chosen_card.card.name}"',
+        chosen_card.card.url,
+        settings,
+    )
+    if approval is not True:
+        notifier.to_both(messages.build_risk_cancelled(chosen_card))
         return
     if dry_run:
         log.info("Dry run: implementation skipped")
