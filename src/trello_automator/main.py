@@ -5,7 +5,7 @@
    feedback -> no new card until it is merged.
 2. Otherwise: rate the cards, ask which one to implement, implement it and report.
 
-Runs on Mondays 12:00, Thursdays 22:30 and Fridays 22:00 (systemd timer). Only one session runs
+Runs on Mondays 12:00, Thursdays 22:30 and Fridays 22:00 (scheduler.sh in the container). Only one session runs
 at a time (lock in data/).
 """
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Entry point of the systemd timer. systemd starts without the shell profile, so node (nvm),
-# claude, gh and uv are put on the PATH here.
+# Runs one session. Called by scheduler.sh in the container, or by hand on the host (where node
+# comes from nvm and claude, gh and uv from ~/.local/bin).
 set -euo pipefail
 
 export NVM_DIR="$HOME/.nvm"

@@ -1,0 +1,16 @@
+name: trello-automator
+
+services:
+  # Runs a session on Mondays 12:00, Thursdays 22:30 and Fridays 22:00 (scheduler.sh).
+  # ~/MyProjects is mounted at the same path as on the host: the ratUFSC repository, the
+  # CLAUDE.md files and data/ (pull_request.json, logs) are the same ones the host sees.
+  trello-automator:
+    build: .
+    container_name: trello-automator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/Sao_Paulo
+      HOME: /home/node
+    volumes:
+      - /home/vip-2002/MyProjects:/home/vip-2002/MyProjects

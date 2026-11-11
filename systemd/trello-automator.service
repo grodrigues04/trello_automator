@@ -1,9 +1,0 @@
-[Unit]
-Description=trello_automator: implementa um card da coluna GUSTAVO no ratUFSC
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/MyProjects/trello_automator/run.sh
-# The implementation has its own timeout (IMPLEMENTATION_TIMEOUT_MINUTES)
-TimeoutStartSec=infinity

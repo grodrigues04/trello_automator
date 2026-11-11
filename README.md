@@ -4,9 +4,10 @@ Implementa com o Claude Code as tasks da coluna **GUSTAVO** do board **Squeaker*
 repositório [ratUFSC](https://github.com/matheusfaustinott/ratUFSC), e avisa pelo WhatsApp usando
 a [interface-personal-whats](https://github.com/grodrigues04/interface-personal-whats).
 
-Roda neste computador, como o seu usuário, por um timer do systemd:
-**segunda 12:00, quinta 22:30 e sexta 22:00**. Computador desligado ou suspenso no horário: a
-sessão é perdida.
+Roda num container Docker neste computador (`scheduler.sh`):
+**segunda 12:00, quinta 22:30 e sexta 22:00**. Computador desligado ou suspenso nos 10 primeiros
+minutos do horário: a sessão é perdida. O container monta `~/MyProjects` no mesmo caminho do host,
+então o ratUFSC, os `CLAUDE.md` e a memória em `data/` são os mesmos de fora do container.
 
 ## Uma sessão
 
@@ -51,8 +52,8 @@ julgamento vai para os prompts em `prompts/`: dar a nota, avaliar risco e implem
 
 ## Segurança
 
-O Claude que implementa roda como você e enxerga seus arquivos. Isso é intencional: ele precisa
-do seu `gh` e da sua chave SSH para o push e o PR. A descrição do card é escrita por outras
+O Claude que implementa enxerga todo o `~/MyProjects` e o seu token do GitHub (`GH_TOKEN`). Isso é
+intencional: ele precisa deles para commitar, dar push e abrir o PR. A descrição do card é escrita por outras
 pessoas, então:
 
 - a revisão de risco roda antes, sem ferramentas, para o card ou o comentário não conseguir
@@ -70,32 +71,29 @@ caminho, por exemplo num pacote do npm.
 ## Configuração
 
 ```bash
-cp .env.example .env    # Trello, MONGO_URI, ENCRYPTION_PASSWORD, SQUEAKER_GROUP
-uv sync
-
-# Teste sem implementar nem olhar o PR: manda tudo só para o Claudio, inclusive a mensagem do Squeaker
-./run.sh --dry-run
-
-# Agendamento
-mkdir -p ~/.config/systemd/user
-ln -sf "$PWD"/systemd/trello-automator.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now trello-automator.timer
-systemctl --user list-timers trello-automator.timer
+cp .env.example .env    # Trello, MONGO_URI, ENCRYPTION_PASSWORD, SQUEAKER_GROUP, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN
+docker compose up -d --build
+docker compose logs -f
 ```
 
-O timer do usuário só roda com você logado. Para rodar também deslogado:
-`loginctl enable-linger $USER`.
+`GH_TOKEN` sai de `gh auth token`; `CLAUDE_CODE_OAUTH_TOKEN`, de `claude setup-token`. Dentro do
+container o remote SSH do ratUFSC é trocado por HTTPS com esse token.
+
+## Memória (`data/`, fora do git)
+
+- `pull_request.json`: o PR aberto pela rotina que está sendo acompanhado. Apagar faz a rotina
+  esquecê-lo e voltar a pegar card novo.
+- `state/<data>.started`: sessão do dia já iniciada (no máximo uma por dia).
+- `reports/` e `logs/`: relatórios do Claude e logs de cada sessão.
 
 ## Comandos úteis
 
 ```bash
-./run.sh                  # sessão completa agora
-./run.sh --all-levels     # sessão completa como se fosse quinta
-systemctl --user start trello-automator.service   # sessão pelo systemd (mesmo ambiente do timer)
-journalctl --user -u trello-automator -f           # log da sessão
-tail -f data/logs/routine.log                      # log de todas as sessões
-uv run pytest
+docker exec trello-automator ./run.sh --dry-run      # teste: só o Claudio, sem implementar nem olhar o PR
+docker exec trello-automator ./run.sh                # sessão completa agora
+docker exec trello-automator ./run.sh --all-levels   # sessão completa como se fosse quinta
+docker exec -w /home/vip-2002/MyProjects/trello_automator trello-automator uv run --frozen pytest
+tail -f data/logs/routine.log
 ```
 
 Saída do Claude de cada implementação ou correção: `data/logs/<sessão>-claude.log`. Para a
