@@ -50,6 +50,14 @@ O que é do script e o que é do Claude: as regras (horários, filtro de complex
 quem escolhe, mensagens) são código em `src/`, testadas em `tests/`. Só o que precisa de
 julgamento vai para os prompts em `prompts/`: dar a nota, avaliar risco e implementar.
 
+## Convivência com o prompt_automator
+
+O `prompt_automator` também implementa no ratUFSC e pergunta no grupo Squeaker. Ele usa um clone
+próprio e branches `prompt/...`, então não mexe no `~/MyProjects/ratUFSC`. Antes de mandar uma
+pergunta com resposta única, o `Notifier` espera enquanto outro projeto aguarda resposta no
+mesmo chat (`is_awaiting_reply` da interface, até 15 minutos): uma rotina nunca pega a resposta
+da outra.
+
 ## Segurança
 
 O Claude que implementa enxerga todo o `~/MyProjects` e o seu token do GitHub (`GH_TOKEN`). Isso é

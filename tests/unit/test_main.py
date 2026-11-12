@@ -185,3 +185,24 @@ def test_corrections_without_reply_to_risk_are_offered_again(notifier, tracked, 
     apply_corrections.assert_not_called()
     saved = pull_requests.load_tracked(main.PULL_REQUEST_PATH)
     assert saved.handled_until == tracked.handled_until
+
+
+def test_question_waits_while_another_project_waits_for_a_reply_in_the_chat():
+    whats = MagicMock()
+    whats.is_awaiting_reply.side_effect = [True, True, False]
+    notifier = main.Notifier(whats, "squeaker-group", dry_run=False, poll_interval_seconds=0)
+
+    notifier.to_squeaker("1 ou 2?", expect_unique_reply=True)
+
+    assert whats.is_awaiting_reply.call_count == 3
+    whats.is_awaiting_reply.assert_called_with("squeaker-group")
+    whats.send_message.assert_called_once()
+
+
+def test_message_without_reply_does_not_wait():
+    whats = MagicMock()
+    notifier = main.Notifier(whats, "squeaker-group", dry_run=False, poll_interval_seconds=0)
+
+    notifier.to_gustavo("aviso")
+
+    whats.is_awaiting_reply.assert_not_called()

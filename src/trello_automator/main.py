@@ -15,6 +15,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -41,22 +42,48 @@ log = logging.getLogger("trello_automator")
 LOCK_PATH = DATA_DIR / "session.lock"
 PULL_REQUEST_PATH = DATA_DIR / "pull_request.json"
 LOGS_DIR = DATA_DIR / "logs"
+CHAT_FREE_POLL_SECONDS = 5
+# A question of another project waits at most 10 minutes for its reply
+CHAT_FREE_TIMEOUT_SECONDS = 15 * 60
 
 
 class Notifier:
     """Sends to the default recipient (group Claudio) and to the Squeaker group."""
 
-    def __init__(self, whats: InterfacePersonalWhats, squeaker_group: str, dry_run: bool):
+    def __init__(
+        self,
+        whats: InterfacePersonalWhats,
+        squeaker_group: str,
+        dry_run: bool,
+        poll_interval_seconds: float = CHAT_FREE_POLL_SECONDS,
+    ):
         self._whats = whats
         # A dry run never writes to the Squeaker group
         self._squeaker_group = None if dry_run else squeaker_group
+        self._poll_interval_seconds = poll_interval_seconds
+
+    def wait_until_chat_is_free(self, recipient: Optional[str]) -> None:
+        """Waits while another project (a prompt_automator session asking its questions) waits
+        for a reply in the same chat: two questions open at once would share the replies.
+        """
+        deadline = time.monotonic() + CHAT_FREE_TIMEOUT_SECONDS
+        while self._whats.is_awaiting_reply(recipient):
+            if time.monotonic() >= deadline:
+                log.warning("Chat still waiting for another reply, asking anyway")
+                return
+            log.info("Chat waiting for another reply, holding the question")
+            time.sleep(self._poll_interval_seconds)
 
     def to_gustavo(self, text: str, expect_unique_reply: bool = False) -> str:
+        if expect_unique_reply:
+            self.wait_until_chat_is_free(None)
         return self._whats.send_message(
             SOURCE, text=text, expect_unique_reply=expect_unique_reply
         )
 
     def to_squeaker(self, text: str, expect_unique_reply: bool = False) -> str:
+        if expect_unique_reply:
+            self.wait_until_chat_is_free(self._squeaker_group)
         return self._whats.send_message(
             SOURCE,
             text=text,
